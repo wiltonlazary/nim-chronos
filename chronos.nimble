@@ -8,7 +8,8 @@ skipDirs      = @["tests"]
 ### Dependencies
 
 requires "nim > 0.19.4",
-         "bearssl"
+         "bearssl",
+         "metrics"
 
 task test, "Run all tests":
   var commands = [

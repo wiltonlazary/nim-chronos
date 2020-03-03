@@ -26,7 +26,7 @@ type
     Pending, Finished, Cancelled, Failed
 
   FutureBase* = ref object of RootObj ## Untyped future.
-    location: array[2, ptr SrcLoc]
+    location*: array[2, ptr SrcLoc]
     callbacks: Deque[AsyncCallback]
     cancelcb*: CallbackFunc
     child*: FutureBase
@@ -63,6 +63,8 @@ type
 var currentID* {.threadvar.}: int
 currentID = 0
 
+declareCounter chronos_new_future, "new Future being created"
+
 template setupFutureBase(loc: ptr SrcLoc) =
   new(result)
   result.state = FutureState.Pending
@@ -70,6 +72,7 @@ template setupFutureBase(loc: ptr SrcLoc) =
   result.id = currentID
   result.location[LocCreateIndex] = loc
   currentID.inc()
+  chronos_new_future.inc()
 
 ## ZAH: As far as I undestand `fromProc` is just a debugging helper.
 ## It would be more efficient if it's represented as a simple statically
@@ -284,6 +287,9 @@ proc addCallback*(future: FutureBase, cb: CallbackFunc, udata: pointer = nil) =
   ## Adds the callbacks proc to be called when the future completes.
   ##
   ## If future has already completed then ``cb`` will be called immediately.
+  {.gcsafe.}:
+    if future.location[0] != nil:
+      callbacksByFuture.inc($future.location[0])
   doAssert(not isNil(cb))
   if future.finished():
     callSoon(cb, udata)

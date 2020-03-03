@@ -12,10 +12,13 @@ include "system/inclrtl"
 
 import os, tables, strutils, heapqueue, lists, options, nativesockets, net,
        deques
-import timer
+import metrics
+import ./timer, ./srcloc
 
 export Port, SocketFlag
 export timer
+
+var callbacksByFuture* = initCountTable[string]()
 
 #{.injectStmt: newGcInvariant().}
 
@@ -253,8 +256,12 @@ template processTimersGetTimeout(loop, timeout: untyped) =
     if len(loop.callbacks) != 0:
       timeout = 0
 
+declareCounter chronos_loop_timers, "loop timers"
+declareGauge chronos_loop_timers_queue, "loop timers queue"
+
 template processTimers(loop: untyped) =
   var curTime = Moment.now()
+  chronos_loop_timers_queue.set(loop.timers.len.int64)
   while loop.timers.len > 0:
     if loop.timers[0].deleted:
       discard loop.timers.pop()
@@ -263,6 +270,9 @@ template processTimers(loop: untyped) =
     if curTime < loop.timers[0].finishAt:
       break
     loop.callbacks.addLast(loop.timers.pop().function)
+    chronos_loop_timers.inc()
+
+declareCounter chronos_processed_callbacks, "total number of processed callbacks"
 
 template processCallbacks(loop: untyped) =
   var count = len(loop.callbacks)
@@ -276,6 +286,7 @@ template processCallbacks(loop: untyped) =
     let callable = loop.callbacks.popFirst()
     if not isNil(callable.function):
       callable.function(callable.udata)
+  chronos_processed_callbacks.inc(count.int64)
 
 when defined(windows) or defined(nimdoc):
   type
@@ -685,11 +696,16 @@ elif unixPlatform:
       let loop = getGlobalDispatcher()
       loop.selector.unregister(sigfd)
 
+  declareCounter chronos_poll_ticks, "Chronos event loop ticks"
+  declareCounter chronos_poll_events, "Chronos poll events", ["event"]
+  declareCounter chronos_future_callbacks, "Future callbacks", ["location"]
   proc poll*() =
     ## Perform single asynchronous step.
     let loop = getGlobalDispatcher()
     var curTime = Moment.now()
     var curTimeout = 0
+
+    chronos_poll_ticks.inc()
 
     when ioselSupportedPlatform:
       let customSet = {Event.Timer, Event.Signal, Event.Process,
@@ -703,6 +719,8 @@ elif unixPlatform:
     for i in 0..<count:
       let fd = loop.keys[i].fd
       let events = loop.keys[i].events
+      for event in events:
+        chronos_poll_events.inc(labelValues = [$event])
 
       withData(loop.selector, fd, adata) do:
         if Event.Read in events or events == {Event.Error}:
@@ -728,6 +746,28 @@ elif unixPlatform:
     # All callbacks which will be added in process, will be processed on next
     # poll() call.
     loop.processCallbacks()
+
+    # Wait until we have a decent amount of data and pick the most frequently
+    # seen futures.
+    const
+      ticksBetweenChecks = 50
+      minimumCallbacksPerCheck = 1000
+      maximumPicksPerCheck = 5
+
+    if chronos_poll_ticks.value.int64 mod ticksBetweenChecks == 0:
+      var sum = 0
+      for val in callbacksByFuture.values:
+        sum += val
+
+      if sum >= minimumCallbacksPerCheck:
+        callbacksByFuture.sort()
+        var i = 0
+        for futureLocation, val in callbacksByFuture:
+          if i == maximumPicksPerCheck:
+            break
+          chronos_future_callbacks.inc(val.int64, labelValues = [futureLocation])
+          i.inc()
+        callbacksByFuture.clear()
 
 else:
   proc initAPI() = discard
@@ -786,7 +826,9 @@ include asyncfutures2
 proc sleepAsync*(duration: Duration): Future[void] =
   ## Suspends the execution of the current async procedure for the next
   ## ``duration`` time.
-  var retFuture = newFuture[void]("chronos.sleepAsync(Duration)")
+
+  # It won't compile with a string argument.
+  var retFuture = newFuture[void](getSrcLocation("chronos.sleepAsync(chronos.timer.Duration)"))
   let moment = Moment.fromNow(duration)
   var timer: TimerCallback
 
