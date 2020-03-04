@@ -519,7 +519,7 @@ proc `not`*(address: TransportAddress): TransportAddress =
 
 proc `+`*(address: TransportAddress, v: uint): TransportAddress =
   ## Add to IPv4/IPv6 transport ``address`` unsigned integer ``v``.
-  result = TransportAddress(family: address.family)
+  result = TransportAddress(family: address.family, port: address.port)
   if address.family == AddressFamily.IPv4:
     var a = uint64(uint32.fromBytesBE(address.address_v4))
     a = a + v
