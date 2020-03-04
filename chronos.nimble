@@ -8,6 +8,7 @@ skipDirs      = @["tests"]
 ### Dependencies
 
 requires "nim > 0.19.4",
+         "stew",
          "bearssl"
 
 task test, "Run all tests":
