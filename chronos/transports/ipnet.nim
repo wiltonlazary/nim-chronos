@@ -40,8 +40,8 @@ proc toHostOrder(mask: IpMask): IpMask {.inline.} =
   ## Converts ``mask`` from network order (which is big-endian) back to
   ## host representation (which can be big/little-endian).
 
+  result = IpMask(family: mask.family)
   if mask.family == AddressFamily.IPv4:
-    result = IpMask(family: mask.family)
     result.mask4 =mask.mask4.fromBE()
   elif mask.family == AddressFamily.IPv6:
     result.mask6[0] = mask.mask6[0].fromBE()
