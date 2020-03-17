@@ -8,12 +8,11 @@ skipDirs      = @["tests"]
 ### Dependencies
 
 requires "nim > 0.19.4",
-         "bearssl",
-         "metrics"
+         "bearssl"
 
 task test, "Run all tests":
   var commands = [
-    "nim c -r -d:useSysAssert -d:useGcAssert tests/testall",
+    "nim c -r --skipUserCfg --skipParentCfg -d:useSysAssert -d:useGcAssert tests/testall",
     "nim c -r tests/testall",
     "nim c -r -d:release tests/testall"
   ]
