@@ -13,19 +13,17 @@ include "system/inclrtl"
 import os, tables, strutils, heapqueue, lists, options, nativesockets, net,
        deques
 when defined(metrics):
-  import metrics
-  when defined(threads):
-    import locks
+  import metrics, locks
 import ./timer, ./srcloc
 
 export Port, SocketFlag
 export timer
 
 when defined(metrics):
-  var callbacksByFuture* = initCountTable[string]()
-  when defined(threads):
-    var callbacksByFutureLock*: Lock
-    initLock(callbacksByFutureLock)
+  var
+    callbacksByFuture* = initCountTable[string]()
+    callbacksByFutureLock*: Lock
+  initLock(callbacksByFutureLock)
 
 #{.injectStmt: newGcInvariant().}
 
@@ -281,24 +279,20 @@ when defined(metrics):
       maximumPicksPerCheck = 5
 
     if chronos_poll_ticks.value.int64 mod ticksBetweenChecks == 0:
-      when defined(threads):
-        withLock(callbacksByFutureLock):
-      else:
-        block:
+      withLock(callbacksByFutureLock):
+        var sum = 0
+        for val in callbacksByFuture.values:
+          sum += val
 
-          var sum = 0
-          for val in callbacksByFuture.values:
-            sum += val
-
-          if sum >= minimumCallbacksPerCheck:
-            callbacksByFuture.sort()
-            var i = 0
-            for futureLocation, val in callbacksByFuture:
-              if i == maximumPicksPerCheck:
-                break
-              chronos_future_callbacks.inc(val.int64, labelValues = [futureLocation])
-              i.inc()
-            callbacksByFuture.clear()
+        if sum >= minimumCallbacksPerCheck:
+          callbacksByFuture.sort()
+          var i = 0
+          for futureLocation, val in callbacksByFuture:
+            if i == maximumPicksPerCheck:
+              break
+            chronos_future_callbacks.inc(val.int64, labelValues = [futureLocation])
+            i.inc()
+          callbacksByFuture.clear()
 
 template processTimers(loop: untyped) =
   var curTime = Moment.now()

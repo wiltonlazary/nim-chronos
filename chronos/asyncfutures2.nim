@@ -9,7 +9,9 @@
 #                MIT license (LICENSE-MIT)
 
 import os, tables, strutils, heapqueue, options, deques, cstrutils
-import srcloc
+when defined(metrics):
+  import metrics, locks
+import ./srcloc
 export srcloc
 
 const
@@ -293,12 +295,8 @@ proc addCallback*(future: FutureBase, cb: CallbackFunc, udata: pointer = nil) =
   when defined(metrics):
     {.gcsafe.}:
       if future.location[0] != nil:
-        when defined(threads):
-          withLock(callbacksByFutureLock):
-        else:
-          block:
-
-            callbacksByFuture.inc($future.location[0])
+        withLock(callbacksByFutureLock):
+          callbacksByFuture.inc($future.location[0])
 
   doAssert(not isNil(cb))
   if future.finished():
