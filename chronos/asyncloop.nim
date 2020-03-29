@@ -13,17 +13,11 @@ include "system/inclrtl"
 import os, tables, strutils, heapqueue, lists, options, nativesockets, net,
        deques
 when defined(metrics):
-  import metrics, locks
+  import metrics, locks, algorithm, sequtils
 import ./timer, ./srcloc
 
 export Port, SocketFlag
 export timer
-
-when defined(metrics):
-  var
-    callbacksByFuture* = initCountTable[string]()
-    callbacksByFutureLock*: Lock
-  initLock(callbacksByFutureLock)
 
 #{.injectStmt: newGcInvariant().}
 
@@ -262,15 +256,24 @@ template processTimersGetTimeout(loop, timeout: untyped) =
       timeout = 0
 
 when defined(metrics):
+  var
+    callbacksByFuture* = initCountTable[string]()
+    callbacksByFutureLock*: Lock
+    pendingFutures* = initTable[string, int]()
+    pendingFuturesLock*: Lock
+  initLock(callbacksByFutureLock)
+  initLock(pendingFuturesLock)
+
   declareCounter chronos_loop_timers, "loop timers"
   declareGauge chronos_loop_timers_queue, "loop timers queue"
   declareCounter chronos_poll_ticks, "Chronos event loop ticks"
   declareCounter chronos_poll_events, "Chronos poll events", ["event"]
   declareCounter chronos_future_callbacks, "Future callbacks", ["location"]
   declareCounter chronos_processed_callbacks, "total number of processed callbacks"
+  declareGauge chronos_pending_futures, "pending futures", ["location"]
 
 
-  proc processCallbacksByFuture() =
+  proc processFutureMetrics() =
     # Wait until we have a decent amount of data and pick the most frequently
     # seen futures.
     const
@@ -293,6 +296,17 @@ when defined(metrics):
             chronos_future_callbacks.inc(val.int64, labelValues = [futureLocation])
             i.inc()
           callbacksByFuture.clear()
+
+      withLock(pendingFuturesLock):
+        const minimumPendingFutures = 10
+        var i = 0
+        for futureLocation in sorted(toSeq(pendingFutures.keys()),
+                                    proc (x, y: string): int = cmp(pendingFutures[x], pendingFutures[y]),
+                                    SortOrder.Descending):
+          if i == maximumPicksPerCheck or pendingFutures[futureLocation] < minimumPendingFutures:
+            break
+          chronos_pending_futures.set(pendingFutures[futureLocation].int64, labelValues = [futureLocation])
+          i.inc()
 
 template processTimers(loop: untyped) =
   var curTime = Moment.now()
@@ -503,7 +517,7 @@ when defined(windows) or defined(nimdoc):
     loop.processCallbacks()
 
     when defined(metrics):
-      processCallbacksByFuture()
+      processFutureMetrics()
 
   proc closeSocket*(fd: AsyncFD, aftercb: CallbackFunc = nil) =
     ## Closes a socket and ensures that it is unregistered.
@@ -789,7 +803,7 @@ elif unixPlatform:
     loop.processCallbacks()
 
     when defined(metrics):
-      processCallbacksByFuture()
+      processFutureMetrics()
 
 else:
   proc initAPI() = discard

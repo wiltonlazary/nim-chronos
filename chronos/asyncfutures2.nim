@@ -77,6 +77,9 @@ template setupFutureBase(loc: ptr SrcLoc) =
   currentID.inc()
   when defined(metrics):
     chronos_new_future.inc()
+    {.gcsafe.}:
+      withLock(pendingFuturesLock):
+        pendingFutures[$loc] = pendingFutures.getOrDefault($loc) + 1
 
 ## ZAH: As far as I undestand `fromProc` is just a debugging helper.
 ## It would be more efficient if it's represented as a simple statically
@@ -130,6 +133,10 @@ proc clean*[T](future: FutureVar[T]) =
   ## Resets the ``finished`` status of ``future``.
   Future[T](future).state = FutureState.Pending
   Future[T](future).error = nil
+  when defined(metrics):
+    {.gcsafe.}:
+      withLock(pendingFuturesLock):
+        pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) + 1
 
 proc finished*(future: FutureBase | FutureVar): bool {.inline.} =
   ## Determines whether ``future`` has completed.
@@ -201,6 +208,10 @@ proc complete[T](future: Future[T], val: T, loc: ptr SrcLoc) =
     future.value = val
     future.state = FutureState.Finished
     future.callbacks.call()
+    when defined(metrics):
+      {.gcsafe.}:
+        withLock(pendingFuturesLock):
+          pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) - 1
 
 template complete*[T](future: Future[T], val: T) =
   ## Completes ``future`` with value ``val``.
@@ -212,6 +223,10 @@ proc complete(future: Future[void], loc: ptr SrcLoc) =
     doAssert(isNil(future.error))
     future.state = FutureState.Finished
     future.callbacks.call()
+    when defined(metrics):
+      {.gcsafe.}:
+        withLock(pendingFuturesLock):
+          pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) - 1
 
 template complete*(future: Future[void]) =
   ## Completes a void ``future``.
@@ -224,6 +239,10 @@ proc complete[T](future: FutureVar[T], loc: ptr SrcLoc) =
     doAssert(isNil(fut.error))
     fut.state = FutureState.Finished
     fut.callbacks.call()
+    when defined(metrics):
+      {.gcsafe.}:
+        withLock(pendingFuturesLock):
+          pendingFutures[$fut.location[LocCreateIndex]] = pendingFutures.getOrDefault($fut.location[LocCreateIndex]) - 1
 
 template complete*[T](futvar: FutureVar[T]) =
   ## Completes a ``FutureVar``.
@@ -237,6 +256,10 @@ proc complete[T](futvar: FutureVar[T], val: T, loc: ptr SrcLoc) =
     fut.state = FutureState.Finished
     fut.value = val
     fut.callbacks.call()
+    when defined(metrics):
+      {.gcsafe.}:
+        withLock(pendingFuturesLock):
+          pendingFutures[$fut.location[LocCreateIndex]] = pendingFutures.getOrDefault($fut.location[LocCreateIndex]) - 1
 
 template complete*[T](futvar: FutureVar[T], val: T) =
   ## Completes a ``FutureVar`` with value ``val``.
@@ -252,6 +275,10 @@ proc fail[T](future: Future[T], error: ref Exception, loc: ptr SrcLoc) =
     future.errorStackTrace =
       if getStackTrace(error) == "": getStackTrace() else: getStackTrace(error)
     future.callbacks.call()
+    when defined(metrics):
+      {.gcsafe.}:
+        withLock(pendingFuturesLock):
+          pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) - 1
 
 template fail*[T](future: Future[T], error: ref Exception) =
   ## Completes ``future`` with ``error``.
@@ -276,6 +303,10 @@ proc cancel[T](future: Future[T], loc: ptr SrcLoc) =
       # If Future's state was `Finished` or `Failed` callbacks are already
       # scheduled.
       last.callbacks.call()
+    when defined(metrics):
+      {.gcsafe.}:
+        withLock(pendingFuturesLock):
+          pendingFutures[$last.location[LocCreateIndex]] = pendingFutures.getOrDefault($last.location[LocCreateIndex]) - 1
 
 template cancel*[T](future: Future[T]) =
   ## Cancel ``future``.
@@ -296,7 +327,7 @@ proc addCallback*(future: FutureBase, cb: CallbackFunc, udata: pointer = nil) =
     {.gcsafe.}:
       if future.location[0] != nil:
         withLock(callbacksByFutureLock):
-          callbacksByFuture.inc($future.location[0])
+          callbacksByFuture.inc($future.location[LocCreateIndex])
 
   doAssert(not isNil(cb))
   if future.finished():
