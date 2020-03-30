@@ -8,7 +8,7 @@
 #    Apache License, version 2.0, (LICENSE-APACHEv2)
 #                MIT license (LICENSE-MIT)
 
-import os, tables, strutils, heapqueue, options, deques, cstrutils
+import os, tables, strutils, heapqueue, options, deques, cstrutils, sets, hashes
 when defined(metrics):
   import metrics, locks
 import ./srcloc
@@ -68,6 +68,34 @@ currentID = 0
 when defined(metrics):
   declareCounter chronos_new_future, "new Future being created"
 
+var pendingFutureRegistry {.threadvar.}: OrderedSet[FutureBase]
+
+proc hash(x: FutureBase): Hash =
+  var h: Hash = 0
+  h = h !& x.id
+  when defined(threads):
+    h = h !& getThreadId
+  return !$h
+
+proc registerPendingFuture(future: FutureBase) =
+  pendingFutureRegistry.incl(future)
+  when defined(metrics):
+    chronos_new_future.inc()
+    {.gcsafe.}:
+      withLock(pendingFuturesLock):
+        pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) + 1
+
+proc unregisterPendingFuture(future: FutureBase) =
+  pendingFutureRegistry.excl(future)
+  when defined(metrics):
+    {.gcsafe.}:
+      withLock(pendingFuturesLock):
+        pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) - 1
+
+proc dumpPendingFutures*(): seq[string] =
+  for future in pendingFutureRegistry:
+    result.add("Future #" & $future.id & " (" & $future.location[LocCreateIndex] & "): " & future.stackTrace)
+
 template setupFutureBase(loc: ptr SrcLoc) =
   new(result)
   result.state = FutureState.Pending
@@ -75,11 +103,7 @@ template setupFutureBase(loc: ptr SrcLoc) =
   result.id = currentID
   result.location[LocCreateIndex] = loc
   currentID.inc()
-  when defined(metrics):
-    chronos_new_future.inc()
-    {.gcsafe.}:
-      withLock(pendingFuturesLock):
-        pendingFutures[$loc] = pendingFutures.getOrDefault($loc) + 1
+  registerPendingFuture(result)
 
 ## ZAH: As far as I undestand `fromProc` is just a debugging helper.
 ## It would be more efficient if it's represented as a simple statically
@@ -133,10 +157,7 @@ proc clean*[T](future: FutureVar[T]) =
   ## Resets the ``finished`` status of ``future``.
   Future[T](future).state = FutureState.Pending
   Future[T](future).error = nil
-  when defined(metrics):
-    {.gcsafe.}:
-      withLock(pendingFuturesLock):
-        pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) + 1
+  registerPendingFuture(future)
 
 proc finished*(future: FutureBase | FutureVar): bool {.inline.} =
   ## Determines whether ``future`` has completed.
@@ -208,10 +229,7 @@ proc complete[T](future: Future[T], val: T, loc: ptr SrcLoc) =
     future.value = val
     future.state = FutureState.Finished
     future.callbacks.call()
-    when defined(metrics):
-      {.gcsafe.}:
-        withLock(pendingFuturesLock):
-          pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) - 1
+    unregisterPendingFuture(future)
 
 template complete*[T](future: Future[T], val: T) =
   ## Completes ``future`` with value ``val``.
@@ -223,10 +241,7 @@ proc complete(future: Future[void], loc: ptr SrcLoc) =
     doAssert(isNil(future.error))
     future.state = FutureState.Finished
     future.callbacks.call()
-    when defined(metrics):
-      {.gcsafe.}:
-        withLock(pendingFuturesLock):
-          pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) - 1
+    unregisterPendingFuture(future)
 
 template complete*(future: Future[void]) =
   ## Completes a void ``future``.
@@ -239,10 +254,7 @@ proc complete[T](future: FutureVar[T], loc: ptr SrcLoc) =
     doAssert(isNil(fut.error))
     fut.state = FutureState.Finished
     fut.callbacks.call()
-    when defined(metrics):
-      {.gcsafe.}:
-        withLock(pendingFuturesLock):
-          pendingFutures[$fut.location[LocCreateIndex]] = pendingFutures.getOrDefault($fut.location[LocCreateIndex]) - 1
+    unregisterPendingFuture(fut)
 
 template complete*[T](futvar: FutureVar[T]) =
   ## Completes a ``FutureVar``.
@@ -256,10 +268,7 @@ proc complete[T](futvar: FutureVar[T], val: T, loc: ptr SrcLoc) =
     fut.state = FutureState.Finished
     fut.value = val
     fut.callbacks.call()
-    when defined(metrics):
-      {.gcsafe.}:
-        withLock(pendingFuturesLock):
-          pendingFutures[$fut.location[LocCreateIndex]] = pendingFutures.getOrDefault($fut.location[LocCreateIndex]) - 1
+    unregisterPendingFuture(fut)
 
 template complete*[T](futvar: FutureVar[T], val: T) =
   ## Completes a ``FutureVar`` with value ``val``.
@@ -275,10 +284,7 @@ proc fail[T](future: Future[T], error: ref Exception, loc: ptr SrcLoc) =
     future.errorStackTrace =
       if getStackTrace(error) == "": getStackTrace() else: getStackTrace(error)
     future.callbacks.call()
-    when defined(metrics):
-      {.gcsafe.}:
-        withLock(pendingFuturesLock):
-          pendingFutures[$future.location[LocCreateIndex]] = pendingFutures.getOrDefault($future.location[LocCreateIndex]) - 1
+    unregisterPendingFuture(future)
 
 template fail*[T](future: Future[T], error: ref Exception) =
   ## Completes ``future`` with ``error``.
@@ -303,10 +309,7 @@ proc cancel[T](future: Future[T], loc: ptr SrcLoc) =
       # If Future's state was `Finished` or `Failed` callbacks are already
       # scheduled.
       last.callbacks.call()
-    when defined(metrics):
-      {.gcsafe.}:
-        withLock(pendingFuturesLock):
-          pendingFutures[$last.location[LocCreateIndex]] = pendingFutures.getOrDefault($last.location[LocCreateIndex]) - 1
+    unregisterPendingFuture(last)
 
 template cancel*[T](future: Future[T]) =
   ## Cancel ``future``.
