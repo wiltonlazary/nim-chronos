@@ -273,7 +273,7 @@ when defined(metrics):
   declareGauge chronos_pending_futures, "pending futures", ["location"]
 
 
-  proc processFutureMetrics() =
+  proc processFutureMetrics() {.gcsafe.} =
     # Wait until we have a decent amount of data and pick the most frequently
     # seen futures.
     const
@@ -282,31 +282,35 @@ when defined(metrics):
       maximumPicksPerCheck = 5
 
     if chronos_poll_ticks.value.int64 mod ticksBetweenChecks == 0:
-      withLock(callbacksByFutureLock):
-        var sum = 0
-        for val in callbacksByFuture.values:
-          sum += val
+      {.gcsafe.}:
+        withLock(callbacksByFutureLock):
+          var sum = 0
+          for val in callbacksByFuture.values:
+            sum += val
+          if sum >= minimumCallbacksPerCheck:
+            callbacksByFuture.sort()
+            var i = 0
+            for futureLocation, val in callbacksByFuture:
+              if i == maximumPicksPerCheck:
+                break
+              chronos_future_callbacks.inc(val.int64, labelValues = [futureLocation])
+              i.inc()
 
-        if sum >= minimumCallbacksPerCheck:
-          callbacksByFuture.sort()
+            {.gcsafe.}:
+              # buggy compiler is buggy
+              callbacksByFuture.clear()
+
+      {.gcsafe.}:
+        withLock(pendingFuturesLock):
+          const minimumPendingFutures = 10
           var i = 0
-          for futureLocation, val in callbacksByFuture:
-            if i == maximumPicksPerCheck:
+          for futureLocation in sorted(toSeq(pendingFutures.keys()),
+                                      proc (x, y: string): int = cmp(pendingFutures[x], pendingFutures[y]),
+                                      SortOrder.Descending):
+            if i == maximumPicksPerCheck or pendingFutures[futureLocation] < minimumPendingFutures:
               break
-            chronos_future_callbacks.inc(val.int64, labelValues = [futureLocation])
+            chronos_pending_futures.set(pendingFutures[futureLocation].int64, labelValues = [futureLocation])
             i.inc()
-          callbacksByFuture.clear()
-
-      withLock(pendingFuturesLock):
-        const minimumPendingFutures = 10
-        var i = 0
-        for futureLocation in sorted(toSeq(pendingFutures.keys()),
-                                    proc (x, y: string): int = cmp(pendingFutures[x], pendingFutures[y]),
-                                    SortOrder.Descending):
-          if i == maximumPicksPerCheck or pendingFutures[futureLocation] < minimumPendingFutures:
-            break
-          chronos_pending_futures.set(pendingFutures[futureLocation].int64, labelValues = [futureLocation])
-          i.inc()
 
 template processTimers(loop: untyped) =
   var curTime = Moment.now()
