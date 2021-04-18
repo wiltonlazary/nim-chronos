@@ -1,5 +1,5 @@
 packageName   = "chronos"
-version       = "2.3.8"
+version       = "3.0.2"
 author        = "Status Research & Development GmbH"
 description   = "Chronos"
 license       = "Apache License 2.0 or MIT"
@@ -7,18 +7,24 @@ skipDirs      = @["tests"]
 
 ### Dependencies
 
-requires "nim > 0.19.4",
-         "bearssl"
+requires "nim > 1.2.0",
+         "stew",
+         "bearssl",
+         "httputils",
+         "https://github.com/status-im/nim-unittest2.git#head"
 
 task test, "Run all tests":
-  var commands = [
-    "nim c -r -d:useSysAssert -d:useGcAssert tests/testall",
-    "nim c -r tests/testall",
-    "nim c -r -d:release tests/testall"
+  var commands = @[
+    "nim c -r -d:useSysAssert -d:useGcAssert tests/",
+    "nim c -r -d:chronosStackTrace -d:chronosStrictException tests/",
+    "nim c -r -d:release tests/",
+    "nim c -r -d:release -d:chronosFutureTracking tests/"
   ]
-  echo "\n" & commands[0]
-  exec commands[0]
-  echo "\n" & commands[1]
-  exec commands[1]
-  echo "\n" & commands[2]
-  exec commands[2]
+  when (NimMajor, NimMinor) >= (1, 5):
+    commands.add "nim c -r --gc:orc -d:chronosFutureTracking -d:release -d:chronosStackTrace tests/"
+
+  for testname in ["testall"]:
+    for cmd in commands:
+      let curcmd = cmd & testname
+      echo "\n" & curcmd
+      exec curcmd

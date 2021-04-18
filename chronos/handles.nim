@@ -7,7 +7,12 @@
 #  Apache License, version 2.0, (LICENSE-APACHEv2)
 #              MIT license (LICENSE-MIT)
 
-import net, nativesockets, asyncloop
+{.push raises: [Defect].}
+
+import
+  std/[net, nativesockets],
+  ./selectors2,
+  ./asyncloop
 
 when defined(windows):
   import os, winlean
@@ -26,7 +31,7 @@ when defined(windows):
   proc connectNamedPipe(hNamedPipe: Handle, lpOverlapped: pointer): WINBOOL
        {.importc: "ConnectNamedPipe", stdcall, dynlib: "kernel32".}
 else:
-  import posix
+  import os, posix
   const
     asyncInvalidSocket* = AsyncFD(posix.INVALID_SOCKET)
     TCP_NODELAY* = 1
@@ -88,7 +93,8 @@ proc getSocketError*(socket: AsyncFD, err: var int): bool =
   result = getSockOpt(socket, cint(SOL_SOCKET), cint(SO_ERROR), err)
 
 proc createAsyncSocket*(domain: Domain, sockType: SockType,
-                        protocol: Protocol): AsyncFD =
+                        protocol: Protocol): AsyncFD {.
+    raises: [Defect, CatchableError].} =
   ## Creates new asynchronous socket.
   ## Returns ``asyncInvalidSocket`` on error.
   let handle = createNativeSocket(domain, sockType, protocol)
@@ -104,7 +110,8 @@ proc createAsyncSocket*(domain: Domain, sockType: SockType,
   result = AsyncFD(handle)
   register(result)
 
-proc wrapAsyncSocket*(sock: SocketHandle): AsyncFD =
+proc wrapAsyncSocket*(sock: SocketHandle): AsyncFD {.
+    raises: [Defect, CatchableError].} =
   ## Wraps socket to asynchronous socket handle.
   ## Return ``asyncInvalidSocket`` on error.
   if not setSocketBlocking(sock, false):
@@ -116,6 +123,34 @@ proc wrapAsyncSocket*(sock: SocketHandle): AsyncFD =
       return asyncInvalidSocket
   result = AsyncFD(sock)
   register(result)
+
+proc getMaxOpenFiles*(): int {.raises: [Defect, OSError].} =
+  ## Returns maximum file descriptor number that can be opened by this process.
+  ##
+  ## Note: On Windows its impossible to obtain such number, so getMaxOpenFiles()
+  ## will return constant value of 16384. You can get more information on this
+  ## link https://docs.microsoft.com/en-us/archive/blogs/markrussinovich/pushing-the-limits-of-windows-handles
+  when defined(windows):
+    result = 16384
+  else:
+    var limits: RLimit
+    if getrlimit(posix.RLIMIT_NOFILE, limits) != 0:
+      raiseOSError(osLastError())
+    result = int(limits.rlim_cur)
+
+proc setMaxOpenFiles*(count: int) {.raises: [Defect, OSError].} =
+  ## Set maximum file descriptor number that can be opened by this process.
+  ##
+  ## Note: On Windows its impossible to set this value, so it just a nop call.
+  when defined(windows):
+    discard
+  else:
+    var limits: RLimit
+    if getrlimit(posix.RLIMIT_NOFILE, limits) != 0:
+      raiseOSError(osLastError())
+    limits.rlim_cur = count
+    if setrlimit(posix.RLIMIT_NOFILE, limits) != 0:
+      raiseOSError(osLastError())
 
 proc createAsyncPipe*(): tuple[read: AsyncFD, write: AsyncFD] =
   ## Create new asynchronouse pipe.

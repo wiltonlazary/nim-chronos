@@ -5,12 +5,13 @@
 #              Licensed under either of
 #  Apache License, version 2.0, (LICENSE-APACHEv2)
 #              MIT license (LICENSE-MIT)
-import os, unittest
+import std/os
+import unittest2
 import ../chronos, ../chronos/timer
 
 when defined(nimHasUsed): {.used.}
 
-suite "Asynchronous timers test suite":
+suite "Asynchronous timers & steps test suite":
   const TimersCount = 10
 
   proc timeWorker(time: Duration): Future[Duration] {.async.} =
@@ -61,3 +62,27 @@ suite "Asynchronous timers test suite":
   test $TimersCount & " timers with 1000ms timeout":
     var res = waitFor(test(1000.milliseconds))
     check (res >= 1000.milliseconds) and (res <= 5000.milliseconds)
+  test "Asynchronous steps test":
+    var futn1 = stepsAsync(-1)
+    var fut0 = stepsAsync(0)
+    var fut1 = stepsAsync(1)
+    var fut2 = stepsAsync(2)
+    var fut3 = stepsAsync(3)
+    check:
+      futn1.completed() == true
+      fut0.completed() == true
+      fut1.completed() == false
+      fut2.completed() == false
+      fut3.completed() == false
+    poll()
+    check:
+      fut1.completed() == true
+      fut2.completed() == false
+      fut3.completed() == false
+    poll()
+    check:
+      fut2.completed() == true
+      fut3.completed() == false
+    poll()
+    check:
+      fut3.completed() == true
