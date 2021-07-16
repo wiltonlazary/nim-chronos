@@ -363,7 +363,8 @@ proc toSAddr*(address: TransportAddress, sa: var Sockaddr_storage,
   else:
     discard
 
-proc address*(ta: TransportAddress): IpAddress {.raises: [Defect, ValueError].} =
+proc address*(ta: TransportAddress): IpAddress {.
+     raises: [Defect, ValueError].} =
   ## Converts ``TransportAddress`` to ``net.IpAddress`` object.
   ##
   ## Note its impossible to convert ``TransportAddress`` of ``Unix`` family,
@@ -375,6 +376,21 @@ proc address*(ta: TransportAddress): IpAddress {.raises: [Defect, ValueError].} 
     IpAddress(family: IpAddressFamily.IPv6, address_v6: ta.address_v6)
   else:
     raise newException(ValueError, "IpAddress supports only IPv4/IPv6!")
+
+proc host*(ta: TransportAddress): string {.raises: [Defect].} =
+  ## Returns ``host`` of TransportAddress ``ta``.
+  ##
+  ## For IPv4 and IPv6 addresses it will return IP address as string, or empty
+  ## string for Unix address.
+  case ta.family
+  of AddressFamily.IPv4:
+    $IpAddress(family: IpAddressFamily.IPv4, address_v4: ta.address_v4)
+  of AddressFamily.IPv6:
+    let a = $IpAddress(family: IpAddressFamily.IPv6,
+                       address_v6: ta.address_v6)
+    "[" & a & "]"
+  else:
+    ""
 
 proc resolveTAddress*(address: string, port: Port,
                       domain: Domain): seq[TransportAddress] {.
